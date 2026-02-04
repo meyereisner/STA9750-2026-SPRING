@@ -1,0 +1,12 @@
+---
+title: "Joshua Eisner's Website for STA 9750"
+---
+
+Hi, my name is Joshua Eisner. I am completing my Master's Degree in Applied Mathematics out of CUNY Queens College. While being in school, I work part-time as a Data Engineer at Cross River, and I will be starting full-time as a Data Science Associate at PwC in August.
+
+```{r}
+#| include: false
+1+1
+```
+--------------
+Last Updated: `r format(Sys.time(), "%A %m %d, %Y at %H:%M%p")`
