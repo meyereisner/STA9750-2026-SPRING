@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-
 ---
 title: "Mini-Project 02 - How Do You Do 'You Do You'?"
 author: Joshua Eisner
