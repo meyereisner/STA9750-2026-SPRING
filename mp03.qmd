@@ -23,15 +23,180 @@ Code related to Data Acquisition and Preparation goes here.
 Remember that code blocks look like this: 
 
 ```{r}
-# Your code goes in chunks like this
-library(tidyverse) # You will want this line for almost all MPs
-x <- 1 + 2 + 3
+#| label: task1-setup
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(tidycensus)
+library(glue)
+library(sf)
+library(readxl)
+
+# cache tigris shapefile downloads across sessions
+options(tigris_use_cache = TRUE)
+
+# project-level data directory (same pattern as mp01, mp02)
+data_dir <- file.path("data", "mp03")
+if(!dir.exists(data_dir)){
+    dir.create(data_dir, showWarnings = FALSE, recursive = TRUE)
+}
 ```
 
-and you can then print variables from chunks: 
 
 ```{r}
-x
+#| label: task1-pull-acs1
+#| message: false
+
+state_pop_file <- file.path(data_dir, "state_population_2015_2024.rds")
+
+if(!file.exists(state_pop_file)){
+    
+    # ACS-1 was not released for 2020 (pandemic disruption)
+    YEARS <- setdiff(2015:2024, 2020)
+    
+    state_pop_raw <- map(YEARS, function(yy){
+        message(glue("Pulling ACS-1 state population for {yy}"))
+        get_acs(
+            geography = "state", 
+            variables = c(total_population = "B01003_001"),
+            year      = yy, 
+            survey    = "acs1", 
+            geometry  = TRUE,    # grab shapefile too
+            cache_table = TRUE   # cache the raw table locally
+        ) |> 
+            mutate(year = yy)
+    }) |> bind_rows()
+    
+    saveRDS(state_pop_raw, state_pop_file)
+} else {
+    state_pop_raw <- readRDS(state_pop_file)
+}
+```
+
+
+```{r}
+#| label: task1-tidy
+
+state_pop <- state_pop_raw |> 
+    select(GEOID, 
+           state_name       = NAME, 
+           total_population = estimate, 
+           year, 
+           geometry)
+
+# quick sanity check: one row per state per year
+state_pop |> 
+    st_drop_geometry() |> 
+    count(year)
+```
+
+```{r}
+#| label: task2-function
+#| message: false
+#| warning: false
+
+library(tidyverse)
+
+library(glue)
+
+state_to_state_migration_2024 <- function(){
+    
+    # 1. Create data directory if it doesn't exist ---------------------------
+    data_dir <- file.path("data", "mp03")
+    if(!dir.exists(data_dir)){
+        dir.create(data_dir, showWarnings = FALSE, recursive = TRUE)
+    }
+    
+    # 2. Download file if not already cached --------------------------------
+    file_url  <- paste0("https://www2.census.gov/programs-surveys/demo/",
+                        "tables/geographic-mobility/2024/state-to-state-migration/",
+                        "State_to_State_Migration_Table_2024_T13.xlsx")
+    file_path <- file.path(data_dir, "State_to_State_Migration_Table_2024.xlsx")
+    
+    if(!file.exists(file_path)){
+        message(glue("Downloading 2024 state-to-state migration file from {file_url}"))
+        download.file(file_url, destfile = file_path, quiet = TRUE, mode = "wb")
+    }
+    
+    # 3a. "Table" sheet: state-to-state flows -------------------------------
+    # Rows 1-8 are merged/metadata headers; actual data starts row 9.
+    # 4 cols: current residence, residence 1 yr ago, estimate, margin of error.
+    flows_table <- read_excel(
+        file_path,
+        sheet     = "Table",
+        skip      = 8,
+        col_names = c("state_current", "state_1y", "estimate", "moe")
+    ) |>
+        # DC comes in with a trailing space in some rows; trim to be safe
+        mutate(state_current = str_trim(state_current),
+               state_1y      = str_trim(state_1y)) |>
+        # Keep only pairs where BOTH sides are one of the 50 US states.
+        # This drops DC, Puerto Rico, Foreign country, U.S. Island Areas,
+        # and the footnote rows at the bottom of the sheet.
+        filter(state_current %in% state.name,
+               state_1y      %in% state.name) |>
+        # Drop "non-moving" diagonal rows (value is "X")
+        filter(estimate != "X") |>
+        # Replace suppressed "N" with "0", then coerce to integer.
+        # (dplyr has no replace_values(); if_else does the same job here.)
+        mutate(estimate = if_else(estimate == "N", "0", estimate),
+               estimate = as.integer(estimate)) |>
+        select(state_current,
+               state_1y,
+               population = estimate) |>
+        mutate(year_current = 2024L,
+               year_1y      = 2023L)
+    
+    # 3b. "Supplemental - Current Res" sheet: stayed-in-state totals --------
+    # Rows 1-8 headers, row 9 is "United States" (drop), row 10 blank,
+    # rows 11-62 are states/DC/PR. Columns we need (by position):
+    #   1 = state_current
+    #   4 = estimate, "same residence 1 year ago"  (didn't move)
+    #   6 = estimate, "movers within same state"   (moved within state)
+    # Sum of 4 + 6 = total population that was in the same state 1 yr ago.
+    flows_stayed <- read_excel(
+        file_path,
+        sheet     = "Supplemental - Current Res",
+        skip      = 8,
+        col_names = FALSE
+    ) |>
+        select(state_current  = 1,
+               same_residence = 4,
+               mover_in_state = 6) |>
+        mutate(state_current = str_trim(state_current)) |>
+        filter(state_current %in% state.name) |>
+        mutate(population   = as.integer(same_residence) +
+                              as.integer(mover_in_state),
+               state_1y     = state_current,
+               year_current = 2024L,
+               year_1y      = 2023L) |>
+        select(state_current, state_1y, population, year_current, year_1y)
+    
+    # 4. Combine: 2,450 off-diagonal flows + 50 diagonal stay totals = 2,500
+    bind_rows(flows_table, flows_stayed) |>
+        arrange(state_current, state_1y)
+}
+```
+
+```{r}
+#| label: task2-check
+
+flows_2024 <- state_to_state_migration_2024()
+
+# Shape checks
+dim(flows_2024)                  # expect 2500 x 5
+n_distinct(flows_2024$state_current)   # expect 50
+n_distinct(flows_2024$state_1y)        # expect 50
+
+# Spot-check vs raw Excel:
+# Table sheet row 19: Alabama <- Florida = 16,423
+flows_2024 |> filter(state_current == "Alabama", state_1y == "Florida")
+
+# Supplemental row for Alabama: 4,522,731 + 437,829 = 4,960,560 stayed-in-AL
+flows_2024 |> filter(state_current == "Alabama", state_1y == "Alabama")
+
+flows_2024 |> head(5)
 ```
 
 or inline, like this: $x$ is `r x`.
