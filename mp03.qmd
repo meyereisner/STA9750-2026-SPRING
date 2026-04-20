@@ -97,18 +97,16 @@ state_pop |>
 #| warning: false
 
 library(tidyverse)
-
+library(readxl)
 library(glue)
 
 state_to_state_migration_2024 <- function(){
     
-    # 1. Create data directory if it doesn't exist ---------------------------
     data_dir <- file.path("data", "mp03")
     if(!dir.exists(data_dir)){
         dir.create(data_dir, showWarnings = FALSE, recursive = TRUE)
     }
     
-    # 2. Download file if not already cached --------------------------------
     file_url  <- paste0("https://www2.census.gov/programs-surveys/demo/",
                         "tables/geographic-mobility/2024/state-to-state-migration/",
                         "State_to_State_Migration_Table_2024_T13.xlsx")
@@ -119,61 +117,48 @@ state_to_state_migration_2024 <- function(){
         download.file(file_url, destfile = file_path, quiet = TRUE, mode = "wb")
     }
     
-    # 3a. "Table" sheet: state-to-state flows -------------------------------
-    # Rows 1-8 are merged/metadata headers; actual data starts row 9.
-    # 4 cols: current residence, residence 1 yr ago, estimate, margin of error.
+    # off-diagonal flows from the "Table" sheet
     flows_table <- read_excel(
-        file_path,
-        sheet     = "Table",
-        skip      = 8,
-        col_names = c("state_current", "state_1y", "estimate", "moe")
-    ) |>
-        # DC comes in with a trailing space in some rows; trim to be safe
+            file_path,
+            sheet     = "Table",
+            skip      = 8,
+            col_names = c("state_current", "state_1y", "estimate", "moe")
+        ) |>
         mutate(state_current = str_trim(state_current),
                state_1y      = str_trim(state_1y)) |>
-        # Keep only pairs where BOTH sides are one of the 50 US states.
-        # This drops DC, Puerto Rico, Foreign country, U.S. Island Areas,
-        # and the footnote rows at the bottom of the sheet.
         filter(state_current %in% state.name,
                state_1y      %in% state.name) |>
-        # Drop "non-moving" diagonal rows (value is "X")
         filter(estimate != "X") |>
-        # Replace suppressed "N" with "0", then coerce to integer.
-        # (dplyr has no replace_values(); if_else does the same job here.)
         mutate(estimate = if_else(estimate == "N", "0", estimate),
                estimate = as.integer(estimate)) |>
-        select(state_current,
-               state_1y,
-               population = estimate) |>
-        mutate(year_current = 2024L,
-               year_1y      = 2023L)
+        # convert full names to two-letter abbreviations
+        mutate(state_current = state.abb[match(state_current, state.name)],
+               state_1y      = state.abb[match(state_1y,      state.name)]) |>
+        select(state_current, state_1y, population = estimate) |>
+        mutate(year_current = 2024L, year_1y = 2023L)
     
-    # 3b. "Supplemental - Current Res" sheet: stayed-in-state totals --------
-    # Rows 1-8 headers, row 9 is "United States" (drop), row 10 blank,
-    # rows 11-62 are states/DC/PR. Columns we need (by position):
-    #   1 = state_current
-    #   4 = estimate, "same residence 1 year ago"  (didn't move)
-    #   6 = estimate, "movers within same state"   (moved within state)
-    # Sum of 4 + 6 = total population that was in the same state 1 yr ago.
+    # stayed-in-state diagonal from the Supplemental sheet:
+    # col 4 = same residence a year ago, col 6 = moved within same state
     flows_stayed <- read_excel(
-        file_path,
-        sheet     = "Supplemental - Current Res",
-        skip      = 8,
-        col_names = FALSE
-    ) |>
+            file_path,
+            sheet     = "Supplemental - Current Res",
+            skip      = 8,
+            col_names = FALSE
+        ) |>
         select(state_current  = 1,
                same_residence = 4,
                mover_in_state = 6) |>
         mutate(state_current = str_trim(state_current)) |>
         filter(state_current %in% state.name) |>
-        mutate(population   = as.integer(same_residence) +
-                              as.integer(mover_in_state),
-               state_1y     = state_current,
-               year_current = 2024L,
-               year_1y      = 2023L) |>
+        mutate(population = as.integer(same_residence) +
+                            as.integer(mover_in_state),
+               state_1y   = state_current) |>
+        mutate(state_current = state.abb[match(state_current, state.name)],
+               state_1y      = state.abb[match(state_1y,      state.name)],
+               year_current  = 2024L,
+               year_1y       = 2023L) |>
         select(state_current, state_1y, population, year_current, year_1y)
     
-    # 4. Combine: 2,450 off-diagonal flows + 50 diagonal stay totals = 2,500
     bind_rows(flows_table, flows_stayed) |>
         arrange(state_current, state_1y)
 }
@@ -185,19 +170,202 @@ state_to_state_migration_2024 <- function(){
 flows_2024 <- state_to_state_migration_2024()
 
 # Shape checks
-dim(flows_2024)                  # expect 2500 x 5
-n_distinct(flows_2024$state_current)   # expect 50
-n_distinct(flows_2024$state_1y)        # expect 50
+dim(flows_2024)                         # expect 2500 x 5
+n_distinct(flows_2024$state_current)    # expect 50
+n_distinct(flows_2024$state_1y)         # expect 50
 
 # Spot-check vs raw Excel:
-# Table sheet row 19: Alabama <- Florida = 16,423
-flows_2024 |> filter(state_current == "Alabama", state_1y == "Florida")
+# Table sheet row 19: AL <- FL = 16,423
+flows_2024 |> filter(state_current == "AL", state_1y == "FL")
 
 # Supplemental row for Alabama: 4,522,731 + 437,829 = 4,960,560 stayed-in-AL
-flows_2024 |> filter(state_current == "Alabama", state_1y == "Alabama")
+flows_2024 |> filter(state_current == "AL", state_1y == "AL")
 
 flows_2024 |> head(5)
 ```
+
+
+```{r}
+#| label: task3-step2-download
+
+file_url_2023  <- paste0("https://www2.census.gov/programs-surveys/demo/",
+                         "tables/geographic-mobility/2023/state-to-state-migration/",
+                         "State_to_State_Migration_Table_2023_T13.xlsx")
+file_path_2023 <- file.path(data_dir, "State_to_State_Migration_Table_2023.xlsx")
+
+if(!file.exists(file_path_2023)){
+    message("Downloading 2023 state-to-state migration file")
+    download.file(file_url_2023,
+                  destfile = file_path_2023,
+                  quiet    = TRUE,
+                  mode     = "wb")
+}
+```
+
+```{r}
+#| label: task3-step3-read
+
+# The row/column state ordering in the 2023 sheet matches alphabetical
+# with DC inserted after Delaware.
+states_with_dc <- c(state.name[1:8], "District of Columbia", state.name[9:50])
+
+# (a) First 6 columns: col D = same residence (didn't move), col F = moved
+# within same state. Their sum gives total who stayed inside the state.
+# Rows 12-62 cover the 50 states + DC.
+stayed_2023 <- read_excel(
+        file_path_2023,
+        range     = "A12:F62",
+        col_names = c("state_current", "pop_est", "pop_moe",
+                      "same_res",      "same_res_moe", "same_state")
+    ) |>
+    mutate(state_current = str_trim(state_current)) |>
+    filter(state_current %in% state.name) |>                  # drop DC -> 50 rows
+    mutate(population   = as.integer(same_res) + as.integer(same_state),
+           state_1y     = state_current,
+           year_current = 2023L,
+           year_1y      = 2022L) |>
+    select(state_current, state_1y, population, year_current, year_1y)
+
+# (b) Bulk flow matrix J:DG. Columns alternate Estimate/MOE, so interleaving
+# the state names with NA gives proper names to the Estimate columns and
+# placeholder names to the MOE columns, which any_of() then drops.
+between_2023 <- read_excel(
+        file_path_2023,
+        range     = "J12:DG62",
+        col_names = vec_interleave(states_with_dc, NA)
+    ) |>
+    select(any_of(states_with_dc)) |>           # keep 51 Estimate cols
+    mutate(state_current = states_with_dc) |>   # tag rows with destination
+    pivot_longer(cols      = -state_current,
+                 names_to  = "state_1y",
+                 values_to = "population") |>
+    filter(state_current != "District of Columbia",
+           state_1y      != "District of Columbia") |>   # drop DC rows/cols
+    filter(state_current != state_1y) |>                 # drop diagonals ("N/A")
+    mutate(population   = as.integer(population),
+           year_current = 2023L,
+           year_1y      = 2022L) |>
+    select(state_current, state_1y, population, year_current, year_1y)
+```
+
+```{r}
+#| label: task3-step4-combine
+
+flows_2023 <- bind_rows(stayed_2023, between_2023) |>
+    arrange(state_current, state_1y)
+
+dim(flows_2023)                         # 2500 x 5
+n_distinct(flows_2023$state_current)    # 50
+n_distinct(flows_2023$state_1y)         # 50
+
+# Spot checks against the raw spreadsheet:
+# Row 13 (Alaska) Col J (Alabama) = 204  ->  people in AK who lived in AL a year ago
+flows_2023 |> filter(state_current == "Alaska", state_1y == "Alabama")
+
+# Alabama diagonal: 4,482,992 (same res) + 437,745 (moved within AL) = 4,920,737
+flows_2023 |> filter(state_current == "Alabama", state_1y == "Alabama")
+
+flows_2023 |> head()
+```
+
+```{r}
+#| label: task3-function
+#| message: false
+#| warning: false
+
+library(vctrs)   # for vec_interleave()
+
+state_to_state_migration_2023 <- function(){
+
+    data_dir <- file.path("data", "mp03")
+    if(!dir.exists(data_dir)){
+        dir.create(data_dir, showWarnings = FALSE, recursive = TRUE)
+    }
+
+    file_url  <- paste0("https://www2.census.gov/programs-surveys/demo/",
+                        "tables/geographic-mobility/2023/state-to-state-migration/",
+                        "State_to_State_Migration_Table_2023_T13.xlsx")
+    file_path <- file.path(data_dir, "State_to_State_Migration_Table_2023.xlsx")
+    if(!file.exists(file_path)){
+        message("Downloading 2023 state-to-state migration file")
+        download.file(file_url, destfile = file_path, quiet = TRUE, mode = "wb")
+    }
+
+    states_with_dc <- c(state.name[1:8], "District of Columbia", state.name[9:50])
+
+    # stayed-in-state diagonal (col D same residence + col F moved within state)
+    stayed <- read_excel(
+            file_path,
+            range     = "A12:F62",
+            col_names = c("state_current", "pop_est", "pop_moe",
+                          "same_res",      "same_res_moe", "same_state")
+        ) |>
+        mutate(state_current = str_trim(state_current)) |>
+        filter(state_current %in% state.name) |>
+        mutate(population   = as.integer(same_res) + as.integer(same_state),
+               state_1y     = state_current,
+               year_current = 2023L,
+               year_1y      = 2022L) |>
+        mutate(state_current = state.abb[match(state_current, state.name)],
+               state_1y      = state.abb[match(state_1y,      state.name)]) |>
+        select(state_current, state_1y, population, year_current, year_1y)
+
+    # between-state flow matrix J:DG; interleave state names with NA so the
+    # Estimate columns are named and MOE columns get dropped by any_of()
+    between <- read_excel(
+            file_path,
+            range     = "J12:DG62",
+            col_names = vec_interleave(states_with_dc, NA)
+        ) |>
+        select(any_of(states_with_dc)) |>
+        mutate(state_current = states_with_dc) |>
+        pivot_longer(cols      = -state_current,
+                     names_to  = "state_1y",
+                     values_to = "population") |>
+        filter(state_current != "District of Columbia",
+               state_1y      != "District of Columbia") |>
+        filter(state_current != state_1y) |>
+        mutate(population   = as.integer(population),
+               year_current = 2023L,
+               year_1y      = 2022L) |>
+        mutate(state_current = state.abb[match(state_current, state.name)],
+               state_1y      = state.abb[match(state_1y,      state.name)]) |>
+        select(state_current, state_1y, population, year_current, year_1y)
+
+    bind_rows(stayed, between) |>
+        arrange(state_current, state_1y)
+}
+```
+
+```{r}
+#| label: task4-function
+
+state_to_state_migration <- function(){
+    bind_rows(
+        state_to_state_migration_2024(),
+        state_to_state_migration_2023()
+    ) |>
+        arrange(year_current, state_current, state_1y)
+}
+```
+
+```{r}
+#| label: task4-check
+
+flows <- state_to_state_migration()
+
+dim(flows)                                    # expect 5000 x 5
+n_distinct(flows$state_current)               # 50
+n_distinct(flows$state_1y)                    # 50
+
+# match the four example rows exactly
+flows |> filter(state_current == "AL", state_1y == "AL", year_current == 2024)  # 4,960,560
+flows |> filter(state_current == "AL", state_1y == "AK", year_current == 2024)  # 387
+flows |> filter(state_current == "AL", state_1y == "AL", year_current == 2023)  # 4,920,737
+flows |> filter(state_current == "AL", state_1y == "AK", year_current == 2023)  # 780
+```
+
+
 
 or inline, like this: $x$ is `r x`.
 
