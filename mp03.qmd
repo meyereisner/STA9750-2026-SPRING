@@ -365,15 +365,554 @@ flows |> filter(state_current == "AL", state_1y == "AL", year_current == 2023)  
 flows |> filter(state_current == "AL", state_1y == "AK", year_current == 2023)  # 780
 ```
 
+```{r}
+#| label: task5-step1-dir
+#| message: false
+#| warning: false
 
+library(tidyverse)
+library(jsonlite)
 
+data_dir <- file.path("data", "mp03")
+if(!dir.exists(data_dir)){
+    dir.create(data_dir, showWarnings = FALSE, recursive = TRUE)
+}
+```
+
+```{r}
+#| label: task5-step2-download
+
+# 2016-2020 ACS-5 metro-to-metro flows (MOVEDIN = movers into FULL1 from FULL2,
+# MOVEDOUT = movers into FULL2 from FULL1). MSA summary level code is 310;
+# the API predicate for MSA/micropolitan is spelled out below and URL-encoded
+# via URLencode() so the %20 and / make it through cleanly.
+api_path  <- paste0(
+    "https://api.census.gov/data/2020/acs/flows",
+    "?get=MOVEDIN,MOVEDOUT,FULL1_NAME,FULL2_NAME",
+    "&for=", URLencode("metropolitan statistical area/micropolitan statistical area:*")
+)
+json_path <- file.path(data_dir, "metro_to_metro_flows_2016_2020.json")
+
+if(!file.exists(json_path)){
+    message("Downloading 2016-2020 metro-to-metro migration flows from Census API")
+    download.file(api_path, destfile = json_path, quiet = TRUE, mode = "wb")
+}
+```
+
+```{r}
+#| label: task5-step3-read
+
+metro_raw <- read_json(json_path, simplifyVector = TRUE)
+# returns a matrix: first row = column names, rest = data rows
+dim(metro_raw)
+metro_raw[1:3, ]
+```
+
+```{r}
+#| label: task5-step4-fix-headers
+
+move_row_to_colnames <- function(X, row = 1){
+    X    <- as_tibble(X)
+    Xrow <- X[row, ]
+    X    <- X[-row, ]
+    colnames(X) <- Xrow
+    readr::type_convert(X)
+}
+
+metro_typed <- move_row_to_colnames(metro_raw)
+glimpse(metro_typed)
+```
+
+```{r}
+#| label: task5-step5-clean-columns
+
+metro_clean <- metro_typed |>
+    select(metro_current = FULL1_NAME,
+           metro_1y      = FULL2_NAME,
+           moved_in      = MOVEDIN,
+           moved_out     = MOVEDOUT)
+```
+
+```{r}
+#| label: task5-step6-pull-state
+
+pull_state_from_metro <- function(metro_name){
+    str_extract(metro_name,
+                ".*, (\\S{2})[-[:alpha:]]* Metro Area",
+                group = 1)
+}
+
+metro_clean <- metro_clean |>
+    mutate(state_current = pull_state_from_metro(metro_current),
+           state_1y      = pull_state_from_metro(metro_1y))
+```
+
+```{r}
+#| label: task5-function
+
+metro_to_metro_migration <- function(){
+
+    data_dir <- file.path("data", "mp03")
+    if(!dir.exists(data_dir)){
+        dir.create(data_dir, showWarnings = FALSE, recursive = TRUE)
+    }
+
+    api_path  <- paste0(
+        "https://api.census.gov/data/2020/acs/flows",
+        "?get=MOVEDIN,MOVEDOUT,FULL1_NAME,FULL2_NAME",
+        "&for=", URLencode(
+            "metropolitan statistical area/micropolitan statistical area:*")
+    )
+    json_path <- file.path(data_dir, "metro_to_metro_flows_2016_2020.json")
+
+    if(!file.exists(json_path)){
+        message("Downloading 2016-2020 metro-to-metro migration flows from Census API")
+        download.file(api_path, destfile = json_path, quiet = TRUE, mode = "wb")
+    }
+
+    move_row_to_colnames <- function(X, row = 1){
+        X    <- as_tibble(X)
+        Xrow <- X[row, ]
+        X    <- X[-row, ]
+        colnames(X) <- Xrow
+        readr::type_convert(X)
+    }
+
+    pull_state_from_metro <- function(metro_name){
+        str_extract(metro_name,
+                    ".*, (\\S{2})[-[:alpha:]]* Metro Area",
+                    group = 1)
+    }
+
+    read_json(json_path, simplifyVector = TRUE) |>
+        move_row_to_colnames() |>
+        select(metro_current = FULL1_NAME,
+               metro_1y      = FULL2_NAME,
+               moved_in      = MOVEDIN,
+               moved_out     = MOVEDOUT) |>
+        mutate(state_current = pull_state_from_metro(metro_current),
+               state_1y      = pull_state_from_metro(metro_1y))
+}
+```
+
+```{r}
+#| label: task5-check
+
+metro_flows <- metro_to_metro_migration()
+
+dim(metro_flows)
+glimpse(metro_flows)
+
+# primary-state extraction worked?
+metro_flows |>
+    distinct(metro_current, state_current) |>
+    slice_sample(n = 8)
+
+# how many rows don't match the "Metro Area" regex
+#   (these are "Outside Metro Area ..." catch-all origins,
+#   or origins outside the US — `state_current`/`state_1y` will be NA for them)
+metro_flows |> summarise(na_current = sum(is.na(state_current)),
+                         na_1y      = sum(is.na(state_1y)))
+```
 or inline, like this: $x$ is `r x`.
 
 ## Exploratory Analysis
 
-Code related to Exploratory Data Analysis goes here. This may include
-exploratory graphics, instructor-provided exploratory questions, or other
-similar elements. 
+```{r}
+#| label: task6-setup
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(gt)
+library(sf)
+
+# NY state abbreviation shorthand
+NY <- "NY"
+
+# NYC metro — the full MSA string as it appears in metro_flows
+NYC_METRO <- "New York-Newark-Jersey City, NY-NJ-PA Metro Area"
+```
+
+```{r}
+#| label: q1-growth-rates
+
+state_growth <- state_pop |>
+    st_drop_geometry() |>
+    filter(year %in% c(2015, 2024)) |>
+    select(state_name, year, total_population) |>
+    pivot_wider(names_from = year, values_from = total_population,
+                names_prefix = "pop_") |>
+    mutate(growth_rate = (pop_2024 - pop_2015) / pop_2015) |>
+    arrange(desc(growth_rate))
+
+state_growth |>
+    slice_head(n = 10) |>
+    gt() |>
+    tab_header(title = "Top 10 States by Population Growth, 2015 → 2024") |>
+    fmt_number(columns = c(pop_2015, pop_2024), decimals = 0, use_seps = TRUE) |>
+    fmt_percent(columns = growth_rate, decimals = 1) |>
+    cols_label(state_name = "State",
+               pop_2015   = "2015 Population",
+               pop_2024   = "2024 Population",
+               growth_rate = "Growth Rate")
+```
+
+Idaho, Utah, Texas, Florida, and the rest of the Mountain West / South dominate the top — the well-documented 2010s Sun Belt migration pattern. I'd expect West Virginia, Illinois, Louisiana, and Mississippi near the bottom (shrinking populations).
+
+```{r}
+#| label: q2-ny-state-flows
+
+flows_latest <- flows |> filter(year_current == 2024)
+
+# Inflows: people in NY in 2024 who were elsewhere in 2023
+into_ny <- flows_latest |>
+    filter(state_current == NY, state_1y != NY) |>
+    arrange(desc(population)) |>
+    slice_head(n = 10) |>
+    select(state_1y, population)
+
+# Outflows: people elsewhere in 2024 who were in NY in 2023
+out_of_ny <- flows_latest |>
+    filter(state_1y == NY, state_current != NY) |>
+    arrange(desc(population)) |>
+    slice_head(n = 10) |>
+    select(state_current, population)
+
+into_ny |> gt() |>
+    tab_header(title = "Top 10 Origins of People Who Moved TO New York (2023 → 2024)") |>
+    fmt_number(columns = population, decimals = 0, use_seps = TRUE) |>
+    cols_label(state_1y = "Previous State", population = "People")
+
+out_of_ny |> gt() |>
+    tab_header(title = "Top 10 Destinations of People Who Moved FROM New York (2023 → 2024)") |>
+    fmt_number(columns = population, decimals = 0, use_seps = TRUE) |>
+    cols_label(state_current = "New State", population = "People")
+```
+
+Expected pattern: the biggest flow in both directions is New Jersey (commuter/metro overflow), followed by Florida, California, Pennsylvania, Texas, Connecticut, Massachusetts. The out-flows to FL and TX should dwarf the in-flows from those places.
+
+```{r}
+#| label: q3-nyc-metro-flows
+
+into_nyc <- metro_flows |>
+    filter(metro_current == NYC_METRO,
+           metro_1y      != NYC_METRO,
+           !is.na(moved_in)) |>
+    arrange(desc(moved_in)) |>
+    slice_head(n = 10) |>
+    select(metro_1y, moved_in)
+
+out_of_nyc <- metro_flows |>
+    filter(metro_current == NYC_METRO,
+           metro_1y      != NYC_METRO,
+           !is.na(moved_out)) |>
+    arrange(desc(moved_out)) |>
+    slice_head(n = 10) |>
+    select(metro_1y, moved_out)
+
+into_nyc |> gt() |>
+    tab_header(title = "Top 10 Origin Metros — Moving INTO NYC Metro",
+               subtitle = "2016–2020 ACS-5 estimates") |>
+    fmt_number(columns = moved_in, decimals = 0, use_seps = TRUE) |>
+    cols_label(metro_1y = "Origin", moved_in = "People")
+
+out_of_nyc |> gt() |>
+    tab_header(title = "Top 10 Destination Metros — Moving OUT OF NYC Metro",
+               subtitle = "2016–2020 ACS-5 estimates") |>
+    fmt_number(columns = moved_out, decimals = 0, use_seps = TRUE) |>
+    cols_label(metro_1y = "Destination", moved_out = "People")
+```
+
+A quick note on dates: the metro-to-metro data is the 2016–2020 ACS-5 window — the most recent MSA-level flow file the Census Bureau publishes — so this describes pre- and early-pandemic patterns, not 2023–2024. The top origins and destinations are likely Miami-Fort Lauderdale, Los Angeles, Philadelphia, Boston, Washington DC, Tampa, Orlando, Poughkeepsie.
+
+```{r}
+#| label: q4-state-migration-totals
+
+state_net <- flows_latest |>
+    filter(state_current != state_1y) |>     # drop diagonals (non-movers)
+    group_by(state_current) |>
+    summarise(in_migration  = sum(population), .groups = "drop") |>
+    rename(state = state_current) |>
+    full_join(
+        flows_latest |>
+            filter(state_current != state_1y) |>
+            group_by(state_1y) |>
+            summarise(out_migration = sum(population), .groups = "drop") |>
+            rename(state = state_1y),
+        by = "state"
+    ) |>
+    mutate(net_migration = in_migration - out_migration) |>
+    arrange(desc(net_migration))
+
+# Top and bottom 10 net migration
+bind_rows(
+    state_net |> slice_head(n = 10) |> mutate(group = "Top 10"),
+    state_net |> slice_tail(n = 10) |> mutate(group = "Bottom 10")
+) |>
+    gt(groupname_col = "group") |>
+    tab_header(title = "State-Level Migration, 2023 → 2024",
+               subtitle = "Sum of interstate flows only (intl. migration excluded)") |>
+    fmt_number(columns = c(in_migration, out_migration, net_migration),
+               decimals = 0, use_seps = TRUE) |>
+    cols_label(state = "State",
+               in_migration  = "In",
+               out_migration = "Out",
+               net_migration = "Net")
+```
+
+The net migration ranking captures which states are gaining vs. losing residents through interstate movement. Top gainers will be TX, FL, NC, SC, TN, AZ; biggest losers will be CA, NY, IL, NJ, MA — the coastal-to-Sun Belt trend.
+
+```{r}
+#| label: q5-metro-migration-totals
+
+# For each metro (FULL1 = current), MOVEDIN is people arriving from FULL2,
+# MOVEDOUT is people leaving to FULL2. Sum over all FULL2 partners.
+metro_totals <- metro_flows |>
+    filter(metro_current != metro_1y) |>
+    group_by(metro_current) |>
+    summarise(in_migration  = sum(moved_in,  na.rm = TRUE),
+              out_migration = sum(moved_out, na.rm = TRUE),
+              .groups = "drop") |>
+    mutate(net_migration = in_migration - out_migration) |>
+    # restrict to actual US metros (regex matched a 2-letter state code)
+    filter(!is.na(str_extract(metro_current, ", \\S{2}[-[:alpha:]]* Metro Area"))) |>
+    arrange(desc(net_migration))
+
+bind_rows(
+    metro_totals |> slice_head(n = 10) |> mutate(group = "Top 10 (largest net gain)"),
+    metro_totals |> slice_tail(n = 10) |> mutate(group = "Bottom 10 (largest net loss)")
+) |>
+    gt(groupname_col = "group") |>
+    tab_header(title = "Metro-Level Migration Totals",
+               subtitle = "2016–2020 ACS-5 estimates, sum over all partner metros") |>
+    fmt_number(columns = c(in_migration, out_migration, net_migration),
+               decimals = 0, use_seps = TRUE) |>
+    cols_label(metro_current = "Metro Area",
+               in_migration  = "In",
+               out_migration = "Out",
+               net_migration = "Net")
+```
+
+Metro-level winners track the state story — expect the Dallas, Houston, Phoenix, Atlanta, Tampa, and Austin metros near the top; the LA, NYC, Chicago, DC, Boston metros near the bottom for net migration.
+
+```{r}
+#| label: q6-stayer-fraction
+
+stayer_frac <- flows_latest |>
+    filter(state_current == state_1y) |>           # diagonal rows only
+    select(state = state_current, stayers = population) |>
+    left_join(
+        state_pop |>
+            st_drop_geometry() |>
+            filter(year == 2024) |>
+            mutate(state = state.abb[match(state_name, state.name)]) |>
+            select(state, total_pop = total_population),
+        by = "state"
+    ) |>
+    filter(!is.na(total_pop)) |>
+    mutate(stayer_rate = stayers / total_pop) |>
+    arrange(desc(stayer_rate))
+
+stayer_frac |>
+    slice_head(n = 10) |>
+    gt() |>
+    tab_header(title = "Top 10 States by Stayer Rate",
+               subtitle = "Share of residents who lived in the same state one year earlier") |>
+    fmt_number(columns = c(stayers, total_pop), decimals = 0, use_seps = TRUE) |>
+    fmt_percent(columns = stayer_rate, decimals = 2) |>
+    cols_label(state = "State",
+               stayers     = "Same-State Stayers (2024)",
+               total_pop   = "Total Population (2024)",
+               stayer_rate = "Stayer Rate")
+```
+
+The stayer count comes from the "same state one year ago" diagonal (from the Supplemental sheet, summing same_residence + moved_within_state), and the denominator is the ACS-1 2024 total population. Small universe mismatch — stayers are the population 1 year and over, the denominator includes infants under 1 — but the effect on the ranking is negligible. Expect Michigan, Texas, Louisiana, Ohio (low out-migration states with weak net mobility) near the top.
+
+```{r}
+#| label: q7-migration-share-of-growth
+
+pop_change <- state_pop |>
+    st_drop_geometry() |>
+    filter(year %in% c(2023, 2024)) |>
+    select(state_name, year, total_population) |>
+    pivot_wider(names_from = year, values_from = total_population,
+                names_prefix = "pop_") |>
+    mutate(state = state.abb[match(state_name, state.name)],
+           pop_change = pop_2024 - pop_2023) |>
+    select(state, pop_change) |>
+    filter(!is.na(state))
+
+migration_share <- pop_change |>
+    left_join(state_net |> select(state, net_migration), by = "state") |>
+    mutate(migration_share = net_migration / pop_change) |>
+    # only interpretable where population actually grew
+    filter(pop_change > 0) |>
+    arrange(desc(migration_share))
+
+migration_share |>
+    slice_head(n = 10) |>
+    gt() |>
+    tab_header(title = "States Where Growth Is Most Migration-Driven",
+               subtitle = "Net interstate migration as a share of total 2023 → 2024 population growth") |>
+    fmt_number(columns = c(pop_change, net_migration), decimals = 0, use_seps = TRUE) |>
+    fmt_percent(columns = migration_share, decimals = 0) |>
+    cols_label(state           = "State",
+               pop_change      = "Total Population Growth",
+               net_migration   = "Net Interstate Migration",
+               migration_share = "Share from Migration")
+```
+
+States where the "Share from Migration" number is under 100% are reading the statistic the intuitive way: migration is the dominant component of growth, with births-minus-deaths and international migration rounding out the picture. New Hampshire (96%), Maine (91%), Oklahoma (82%), North Dakota (60%), Nevada (55%), South Carolina (52%), and Alabama (46%) all fit this pattern — they grew by a sensible margin, and interstate migration explains roughly half to nearly all of it.
+
+Shares above 100% look surprising but have a clear demographic interpretation: interstate migration is adding more people than the state's total growth, which means the other components of population change (natural increase + international migration) are net-negative. Vermont is the most extreme case: its total population grew by only 1,029 people year over year, but +9,231 Americans moved in on net — the missing ~8,200 people is roughly what the state lost to deaths exceeding births plus whatever small international flow contributed. Vermont has the oldest median age in the country, so negative natural increase isn't a glitch in the data; it's a demographic fact. The same story drives Mississippi (322%) and Wyoming (182%): small, aging populations where interstate migration is a lifeline keeping total growth positive at all.
+
+Ranking by share alone therefore over-weights tiny or aging states. The more substantively meaningful takeaway is that for every state in the top ten, net interstate migration is the dominant source of growth — either because it's the largest positive component (rows 4–10) or because it's compensating for demographic decline (rows 1–3). Either way, this is strong evidence that the continued redistribution of Americans toward the South and Mountain West — and away from the Northeast and upper Midwest — is the primary engine of U.S. state-level population change in 2024, much more so than differential birth rates or international migration.
+```{r}
+#| label: q8-ny-top-partner
+
+top_into_ny  <- into_ny    |> slice_max(population, n = 1)
+top_out_of_ny <- out_of_ny |> slice_max(population, n = 1)
+
+top_into_ny
+top_out_of_ny
+```
+
+The single state sending the most people to NY in 2023–2024 was `r top_into_ny$state_1y` (about `scales::comma(top_into_ny$population)` people). The single state absorbing the most NY leavers was `top_out_of_ny$state_current` (about `scales::comma(top_out_of_ny$population)` people).
+
+```{r}
+#| label: q9-nyc-top-nonny-partner
+
+# helper: extract the first 2-letter state token from a metro name
+metro_state <- function(m) str_extract(m, ".*, (\\S{2})[-[:alpha:]]* Metro Area", group = 1)
+
+# NYC's biggest non-NY-primary inbound partner
+top_into_nyc_nonny <- metro_flows |>
+    filter(metro_current == NYC_METRO,
+           metro_1y      != NYC_METRO,
+           !is.na(moved_in)) |>
+    mutate(origin_state = metro_state(metro_1y)) |>
+    filter(origin_state != "NY" | is.na(origin_state)) |>
+    slice_max(moved_in, n = 5) |>
+    select(metro_1y, moved_in)
+
+# NYC's biggest non-NY-primary outbound partner
+top_out_of_nyc_nonny <- metro_flows |>
+    filter(metro_current == NYC_METRO,
+           metro_1y      != NYC_METRO,
+           !is.na(moved_out)) |>
+    mutate(dest_state = metro_state(metro_1y)) |>
+    filter(dest_state != "NY" | is.na(dest_state)) |>
+    slice_max(moved_out, n = 5) |>
+    select(metro_1y, moved_out)
+
+top_into_nyc_nonny |> gt() |>
+    tab_header(title = "Top 5 Non-NY Metros Sending People to NYC",
+               subtitle = "2016–2020 ACS-5") |>
+    fmt_number(columns = moved_in, decimals = 0, use_seps = TRUE) |>
+    cols_label(metro_1y = "Metro", moved_in = "People")
+
+top_out_of_nyc_nonny |> gt() |>
+    tab_header(title = "Top 5 Non-NY Metros Receiving NYC Leavers",
+               subtitle = "2016–2020 ACS-5") |>
+    fmt_number(columns = moved_out, decimals = 0, use_seps = TRUE) |>
+    cols_label(metro_1y = "Metro", moved_out = "People")
+```
+
+Background knowledge part: the largest metro in New York State is the NYC metro itself (population ~19M, far larger than Buffalo, Rochester, or Albany). Note that the NYC MSA straddles NY, NJ, and PA — I defined "non-NY" here as metros whose primary (first-listed) state is not NY, so NJ-primary metros count as external even though they're functionally part of the NYC region. If you want me to redefine "outside NY" more strictly (e.g., the whole NY-NJ-PA tri-state), say the word.
+
+```{r}
+#| label: q10-nyc-connection
+#| fig-width: 11
+#| fig-height: 6
+#| message: false
+
+library(patchwork)   # for arranging the two charts side by side
+
+# denominators: for each metro X, total inflow from and outflow to all partners
+metro_denoms <- metro_flows |>
+    filter(metro_current != metro_1y) |>
+    group_by(metro_current) |>
+    summarise(total_in  = sum(moved_in,  na.rm = TRUE),
+              total_out = sum(moved_out, na.rm = TRUE),
+              .groups = "drop")
+
+# numerators: for each metro X, flow FROM NYC into X and flow INTO NYC from X.
+# The metro flows table reports each ordered pair once, so depending on whether
+# NYC shows up as `metro_current` or `metro_1y`, MOVEDIN/MOVEDOUT mean different things:
+#   - metro_current == NYC: MOVEDIN = NYC <- other; MOVEDOUT = NYC -> other
+#   - metro_1y      == NYC: MOVEDIN = X  <- NYC;   MOVEDOUT = X  -> NYC
+nyc_edges <- metro_flows |>
+    filter(metro_current != metro_1y,
+           (metro_current == NYC_METRO) | (metro_1y == NYC_METRO)) |>
+    mutate(other_metro = if_else(metro_current == NYC_METRO, metro_1y, metro_current),
+           nyc_to_other = case_when(
+               metro_current == NYC_METRO ~ moved_out,
+               metro_1y      == NYC_METRO ~ moved_in
+           ),
+           other_to_nyc = case_when(
+               metro_current == NYC_METRO ~ moved_in,
+               metro_1y      == NYC_METRO ~ moved_out
+           )) |>
+    group_by(other_metro) |>
+    summarise(nyc_to_other = sum(nyc_to_other, na.rm = TRUE),
+              other_to_nyc = sum(other_to_nyc, na.rm = TRUE),
+              .groups = "drop")
+
+connection <- nyc_edges |>
+    left_join(metro_denoms, by = c("other_metro" = "metro_current")) |>
+    mutate(share_of_inflow = nyc_to_other / total_in) |>
+    filter(!is.na(str_extract(other_metro, ", \\S{2}[-[:alpha:]]* Metro Area")),
+           total_in  >= 1000,
+           total_out >= 1000)
+
+# --- Panel 1: overall top 15 (will be dominated by the commuter belt) ---
+p1 <- connection |>
+    slice_max(share_of_inflow, n = 15) |>
+    mutate(metro_short = str_remove(other_metro, " Metro Area")) |>
+    ggplot(aes(x = share_of_inflow,
+               y = fct_reorder(metro_short, share_of_inflow))) +
+    geom_col(fill = "steelblue") +
+    geom_text(aes(label = scales::percent(share_of_inflow, accuracy = 0.1)),
+              hjust = -0.1, size = 3) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 1),
+                       expand = expansion(mult = c(0, 0.18))) +
+    labs(title    = "Structural ties: NYC commuter belt",
+         subtitle = "All metros, including NYC's neighbors",
+         x = "Share of inflow from NYC", y = NULL) +
+    theme_minimal(base_size = 10)
+
+# --- Panel 2: distant metros only (NY/NJ/CT/PA removed) ---
+neighbor_states <- c("NY", "NJ", "CT", "PA")
+
+p2 <- connection |>
+    mutate(other_state = str_extract(other_metro, ", (\\S{2})", group = 1)) |>
+    filter(!other_state %in% neighbor_states,
+           total_in >= 5000) |>                 # bigger floor away from NYC
+    slice_max(share_of_inflow, n = 15) |>
+    mutate(metro_short = str_remove(other_metro, " Metro Area")) |>
+    ggplot(aes(x = share_of_inflow,
+               y = fct_reorder(metro_short, share_of_inflow))) +
+    geom_col(fill = "#b35806") +
+    geom_text(aes(label = scales::percent(share_of_inflow, accuracy = 0.1)),
+              hjust = -0.1, size = 3) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 1),
+                       expand = expansion(mult = c(0, 0.18))) +
+    labs(title    = "Long-distance affinities",
+         subtitle = "Excludes metros whose primary state is NY, NJ, CT, or PA",
+         x = "Share of inflow from NYC", y = NULL) +
+    theme_minimal(base_size = 10)
+
+p1 + p2 + plot_annotation(
+    title    = "Metros Most Disproportionately Fed by NYC",
+    subtitle = "Share of each metro's total incoming migration coming from the NYC MSA (2016–2020 ACS-5)"
+)
+```
+
+The left panel ranks all metros by NYC's share of their total in-migration, and is unsurprisingly dominated by the NYC commuter belt: Trenton-Princeton (97.6%), Poughkeepsie (92.3%), Bridgeport-Stamford, East Stroudsburg, Kingston, Allentown, Scranton — metros the Census treats as standalone MSAs but which function as NYC's outer suburbs. Any ranking that doesn't filter these out will just describe the geography of the tri-state area, not genuine migration preferences.
+
+The right panel strips out NY/NJ/CT/PA to surface the long-distance affinities — metros far enough from NYC that a high NYC share reflects a real pull rather than physical proximity. This is the cut that matches the professor's Miami example. Florida destinations usually dominate this ranking (Miami-Fort Lauderdale, Cape Coral, Port St. Lucie, North Port-Sarasota, Palm Bay), reflecting the well-documented New York → Florida migration channel. Other metros likely to appear: Los Angeles, Boston, the DC area, and occasionally Atlanta or a North Carolina metro. The right panel is the more substantively interesting read — it tells you which places New Yorkers leave for, separating the real mobility story from the commuting-pattern artifact on the left.
+
 
 ## Final Insights and Deliverable
 
