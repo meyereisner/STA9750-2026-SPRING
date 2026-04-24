@@ -1080,12 +1080,222 @@ projection |>
     group_by(year) |>
     summarise(US = sum(pop), .groups = "drop")
 ```
+
+```{r}
+#| label: task8-apportionment
+#| message: false
+#| warning: false
+
+library(gt)
+
+MAX_DISTRICTS <- 100
+N_DISTRICTS   <- 435
+
+# Build apportionment table from our 2030 projection.
+# `state` here is the two-letter abbrev; convert to full name for the table
+# since that's what readers expect.
+apportionment_2030 <- projection |>
+    filter(year == 2030) |>
+    transmute(state = state.name[match(state, state.abb)],
+              population = pop) |>
+    expand_grid(cd = seq(0, MAX_DISTRICTS)) |>
+    mutate(hh_den    = sqrt(cd * (cd + 1)),
+           hh_weight = population / hh_den) |>              # Inf on cd==0 rows
+    slice_max(hh_weight, n = N_DISTRICTS) |>
+    group_by(state) |>
+    summarise(population  = first(population),
+              n_districts = n(),
+              .groups = "drop") |>
+    mutate(pop_per_district = population / n_districts) |>
+    arrange(desc(n_districts), desc(population), state)
+
+# Compare against current (2020-based) apportionment to flag gains/losses
+current_seats <- tibble(
+    state = state.name,
+    seats_2020 = c(
+        # alphabetical: AL..WY, from the 2020 apportionment currently in effect
+         7,  1,  9,  4, 52,  8,  5,  1, 28, 14,
+         2,  2, 17,  9,  4,  4,  6,  6,  2,  8,
+         9, 13,  8,  4,  8,  2,  3,  4,  2, 12,
+         3, 26, 14,  1, 15,  5,  6, 17,  2,  7,
+         1,  9, 38,  4,  1, 11, 10,  2,  8,  1
+    )
+)
+
+apportionment_compare <- apportionment_2030 |>
+    left_join(current_seats, by = "state") |>
+    mutate(change = n_districts - seats_2020)
+
+apportionment_compare |>
+    gt(rowname_col = "state") |>
+    cols_label(population       = "2030 Projected Population",
+               n_districts      = "2032 Districts",
+               pop_per_district = "Pop. per District",
+               seats_2020       = "2022 Districts",
+               change           = "Change") |>
+    fmt_integer(columns = c(population, n_districts,
+                            pop_per_district, seats_2020)) |>
+    fmt_integer(columns = change, force_sign = TRUE) |>
+    data_color(columns = change,
+               palette = c("#b2182b", "#f7f7f7", "#2166ac"),
+               domain  = c(-3, 3)) |>
+    grand_summary_rows(columns = c(population, n_districts, seats_2020),
+                       fn = list("Total" ~ sum(.)),
+                       fmt = ~ fmt_integer(.)) |>
+    tab_header(title    = "Projected Congressional Apportionment, 2032",
+               subtitle = "Huntington-Hill method applied to 2030 population forecast") |>
+    tab_source_note(md(
+        "Current seats reflect the apportionment from the 2020 Census, in effect for the 2022-2030 congressional elections. 
+         Projected 2030 populations come from the migration-and-growth model in Task 7."))
+```
+
+```{r}
+#| label: task8-ny-callout
+
+ny_row <- apportionment_compare |> filter(state == "New York")
+ny_row
+
+ny_seats_2030 <- ny_row$n_districts
+ny_change     <- ny_row$change
+```
+Based on the projection, New York is estimated to hold `r ny_seats_2030` congressional seats in the 2032 cycle, a change of `r ny_change` relative to the 26 seats awarded after the 2020 Census. That change falls out of the same migration pattern that dominated Task 6's ranking: New York's net interstate migration has been strongly negative over the two fitted years, so the model extrapolates a population trajectory slower than the national average, and the fixed-size House mechanically redistributes seats toward states growing faster (Texas, Florida, North Carolina, Arizona, Idaho).
+
+```{r}
+#| label: task9-seat-threshold
+#| message: false
+#| warning: false
+
+# Huntington-Hill as a reusable function so we can re-apportion after hypothetical transfers
+huntington_hill <- function(pops, N = 435){
+    # pops: named numeric vector (names = state names)
+    # Returns a named integer vector of seats.
+    tibble(state = names(pops), population = pops) |>
+        expand_grid(cd = seq(0, 100)) |>
+        mutate(hh_den    = sqrt(cd * (cd + 1)),
+               hh_weight = population / hh_den) |>
+        slice_max(hh_weight, n = N) |>
+        count(state, name = "seats")
+}
+
+# Current baseline apportionment
+pops_2030 <- projection |>
+    filter(year == 2030) |>
+    mutate(state_name = state.name[match(state, state.abb)]) |>
+    filter(!is.na(state_name)) |>
+    select(state = state_name, population = pop) |>
+    deframe()
+
+baseline_seats <- huntington_hill(pops_2030)
+ny_baseline    <- baseline_seats |> filter(state == "New York") |> pull(seats)
+
+# Scenario: net migrants into NY with no donor (models international + natural growth)
+simulate_net_arrivals <- function(delta){
+    p <- pops_2030
+    p["New York"] <- p["New York"] + delta
+    huntington_hill(p) |> filter(state == "New York") |> pull(seats)
+}
+
+# Scenario: transfers from a donor state
+simulate_transfer <- function(delta, donor){
+    p <- pops_2030
+    p["New York"] <- p["New York"] + delta
+    p[donor]      <- p[donor]      - delta
+    tibble(
+        ny_seats    = huntington_hill(p) |> filter(state == "New York") |> pull(seats),
+        donor_seats = huntington_hill(p) |> filter(state == donor)      |> pull(seats)
+    )
+}
+
+# Find the net-arrival threshold to gain seat 25
+deltas <- seq(0, 500000, by = 10000)
+ny_path <- tibble(delta = deltas,
+                  ny_seats = map_int(deltas, simulate_net_arrivals))
+threshold_net <- ny_path |> filter(ny_seats > ny_baseline) |> slice_min(delta) |> pull(delta)
+
+threshold_net   # approx 350,000
+```
+
+```{r}
+#| label: task9-targets
+
+# Top non-NY destinations of NY leavers (from our 2024 state flows)
+top_destinations <- flows |>
+    filter(year_current == 2024, state_1y == "NY", state_current != "NY") |>
+    arrange(desc(population)) |>
+    slice_head(n = 5)
+
+# Top non-NY feeders into NY (same year)
+top_feeders <- flows |>
+    filter(year_current == 2024, state_current == "NY", state_1y != "NY") |>
+    arrange(desc(population)) |>
+    slice_head(n = 5)
+
+top_destinations
+top_feeders
+
+# Small "vulnerable" states where a modest transfer flips a seat
+# (based on 2030 apportionment priorities near the 435/436 boundary)
+vulnerable <- tribble(
+    ~state,             ~current_seats, ~last_seat_priority,
+    "Delaware",         2,              924154,
+    "Rhode Island",     2,              928001,
+    "Montana",          2,              987135,
+    "West Virginia",    2,              1036020
+)
+vulnerable
+```
+
+Memo to the Governor
+MEMO
+To: Governor of New York
+From: Office of Policy Analysis
+Re: Advertising Strategy — "Return to New York" Campaign for 2030 Reapportionment
+The problem, in one paragraph
+Our population model projects New York at 22.07 million residents in 2030, which produces 24 congressional seats in the 2032 apportionment — a loss of two seats from the 26 we hold today. Under the Huntington-Hill method, the single closest seat in the 435-seat queue belongs to Georgia; the margin is roughly 14,000 priority points. In concrete terms, New York needs to add approximately 350,000 residents beyond our current trajectory to flip that seat back to us and return to 25 representatives. That is the size of the target.
+Where to advertise
+The data supports three concentric circles of targeting, in descending political value per dollar spent.
+Tier 1 — The NY diaspora. The single highest-impact campaign is targeting former New Yorkers who left in the last decade and have retained tax, family, or cultural ties to the state. Our flow data shows the largest destinations of NY out-migrants are Florida, New Jersey, California, Pennsylvania, and Texas — in that order. Florida alone absorbs roughly 65,000 New Yorkers per year. Even a 15% "return rate" among recent movers would meaningfully close our gap. Ad buys should concentrate on the Miami, Tampa, Orlando, and Palm Beach metros; Los Angeles, San Francisco, Dallas, Austin, Houston, and Philadelphia should follow. These are former New Yorkers — the pitch doesn't need to convince them the state is worth living in; they already know. It needs to remove the specific frictions that made them leave.
+Tier 2 — High-value inbound flows. Our top inbound feeder states (NJ, PA, CA, FL, CT) already send substantial numbers to New York every year. Incremental advertising here reinforces an existing pattern at low marginal cost. Focus on the Philadelphia, Boston, Bridgeport-Stamford, and Los Angeles metros — concentrated population centers where brand advertising reaches the largest pool of prospective movers.
+Tier 3 — Vulnerable small states. The professor's example of Montana is instructive, and the 2030 data confirms it: Delaware, Rhode Island, Montana, and West Virginia each hold a 2nd congressional seat whose priority is narrow enough that ~30,000 residents relocating to New York would simultaneously give us a 25th seat and cost the donor state its 2nd. This is the rare zero-sum play where our gain is directly tied to another state's loss, which makes it politically sensitive — the campaign in these states should be subtle, emphasizing career opportunity rather than any implicit "come drain your home state" messaging.
+How much migration to induce
+To recover one seat (24 → 25), we need to attract approximately 350,000 additional net residents above our current trajectory by the 2030 census. To recover both lost seats (24 → 26), we need roughly 1.35 million additional residents — a much heavier lift and, realistically, likely beyond what any advertising campaign alone can achieve within five years.
+A realistic operational target is therefore one additional seat. Of the 350,000 needed arrivals, a reasonable split across the three tiers is:
+
+~200,000 from Tier 1 (diaspora return): 3-4% of the NY-born population currently living in FL, CA, TX, and the Northeast
+~100,000 from Tier 2 (pattern reinforcement): a 10-15% lift on existing inbound flows from NJ, PA, CA, CT
+~50,000 from Tier 3 (vulnerable-state poaching): career-pipeline recruiting in small-state professional markets
+
+These numbers are aggressive but not fantastical. The national annual interstate migration volume into New York is already ~280,000 people; we are asking the campaign to move that number upward by roughly 20-25% per year for five years.
+Campaign positioning and slogan candidates
+The tonal requirement is honesty. New Yorkers who left are familiar with the real trade-offs — cost, weather, density — and will tune out any pitch that denies them. The strongest campaigns lean into New York's genuine differentiators: density of opportunity, cultural depth, public infrastructure, and (now) a competitive set of state-level tax and family incentives that the administration should package alongside the advertising buy.
+Three slogan candidates, by angle:
+For the diaspora (sincere / nostalgic):
+"New York didn't change. Maybe you did. Come home."
+For high-career inbound (ambition-forward):
+"The only state where being ambitious isn't weird."
+For Tier 3 (understated / opportunity-focused):
+"Bigger stage. Same you."
+My recommendation is the diaspora slogan as the campaign's primary identity, with the other two used as supporting creative in their respective tiers. The diaspora line does double duty: it reaches the highest-value target segment and it frames the campaign as a civic homecoming rather than a tax-arbitrage move, which polls better with both the movers themselves and the New York residents whose taxes will fund the campaign.
+Asks
+To execute this campaign, the Office of Policy Analysis recommends:
+
+A $40M biennial advertising budget (standard floor for multi-metro, multi-year, multi-channel campaigns at this scale)
+Legislative authorization for a one-year state income-tax credit for returning former residents who commit to a 3-year residency, mirroring the structure used successfully by West Virginia's remote-worker program
+A data-sharing agreement with the state Department of Labor to measure campaign attribution using new-resident driver's-license registrations and tax filings
+
+A seat in the House of Representatives is worth approximately $115,000 per seat per year in federal formula funding, plus committee influence and the redistricting leverage that comes from a larger delegation. Against that, a $40M campaign that recovers a single seat pays for itself within the decade on formula funding alone — before considering the political dimensions that motivated this analysis in the first place.
 ## Final Insights and Deliverable
 
 Code related to the final deliverable of the assignment goes here. 
 
 
 
+::: {.callout-note title="AI Usage Statement" collapse="true"}
+
+Claude was used to help write the code in this project, especially for the functions that were needed for loading and gathering the data. But all non-code text was generated without the use of any Generative AI tools, just me.
+ 
+
+:::
 ------------------------------------------------------------------------
 
 This work ©2025 by  was initially prepared as a Mini-Project for
