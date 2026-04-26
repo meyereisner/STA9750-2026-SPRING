@@ -891,33 +891,24 @@ p1 + p2 + plot_annotation(
 
 ## Task 7
 
-```{r}
-# Task 7 abroad
 
-M_2024 <- read_excel(
+```{r}
+# Step 1: M^(2023)
+
+M_2023 <- read_excel(
         file.path("data", "mp03", "State_to_State_Migration_Table_2024.xlsx"),
         sheet = "Supplemental - Current Res",
         range = "J9",
         col_names = "from_abroad"
     ) |> pull(from_abroad)
 
-M_2023 <- read_excel(
-        file.path("data", "mp03", "State_to_State_Migration_Table_2023.xlsx"),
-        sheet = "Table",
-        range = "DH10",
-        col_names = "from_abroad"
-    ) |> pull(from_abroad)
-
-M_2024  # movers from abroad during 2023 -> 2024
-M_2023  # movers from abroad during 2022 -> 2023
+M_2023
 ```
-M(2023) is `r m_2023`.
-m(2024) is `r m_2024`.
-```{r}
-# Task 7 g-bar
+M^(2023) is `r M_2023`.
 
-# National population totals in each year, summing the 50 state ACS-1 estimates.
-# Keeping the frame as just (year, total_pop) so this plays nicely with joins.
+```{r}
+# Step 2: g-bar^(2023)
+
 national_pop <- state_pop |>
     st_drop_geometry() |>
     filter(year %in% c(2022, 2023, 2024)) |>
@@ -928,29 +919,21 @@ P_2022 <- national_pop |> filter(year == 2022) |> pull(national_pop)
 P_2023 <- national_pop |> filter(year == 2023) |> pull(national_pop)
 P_2024 <- national_pop |> filter(year == 2024) |> pull(national_pop)
 
-# g-bar for the two one-year windows we care about.
-# For the 2023 -> 2024 window, M_2024 is the abroad component; denominator is P_2023.
-# For the 2022 -> 2023 window, use M_2023 and denominator P_2022.
-g_2024 <- (P_2024 - P_2023 - M_2024) / P_2023
-g_2023 <- (P_2023 - P_2022 - M_2023) / P_2022
-
-tibble(window = c("2023 -> 2024", "2022 -> 2023"),
-g_bar = c(g_2024, g_2023))
+g_2023 <- (P_2024 - P_2023 - M_2023) / P_2023
+g_2023
 ```
+Using the national population statistics, the calculated value of g-bar^(2023) is `r g_2023`. 
 
 ```{r}
-# Task 7 m-2024
+# Step 3: Estimate m_{j -> i}^(2023)
 
-# State populations by (state abbrev, year) for easy joins
 state_pop_tidy <- state_pop |>
     st_drop_geometry() |>
     mutate(state = state.abb[match(state_name, state.name)]) |>
     filter(!is.na(state)) |>
     select(state, year, pop = total_population)
 
-# Pair table: P_i^{2023} and P_j^{2023} attached to each (destination i, origin j) flow.
-# flows rows where year_current == 2024 represent moves from 2023 -> 2024, so t = 2023.
-m_2024 <- flows |>
+m_2023 <- flows |>
     filter(year_current == 2024, state_current != state_1y) |>
     left_join(state_pop_tidy |> filter(year == 2023) |> select(state, P_i = pop),
               by = c("state_current" = "state")) |>
@@ -959,98 +942,126 @@ m_2024 <- flows |>
     mutate(m = population / sqrt(P_i * P_j)) |>
     select(state_current, state_1y, M_ji = population, P_i, P_j, m)
 
-nrow(m_2024)         # expect 2450
-summary(m_2024$m)
-head(m_2024)
-```
-
-```{r}
-# Task 7 m-2023
-
-m_2023 <- flows |>
-    filter(year_current == 2023, state_current != state_1y) |>
-    left_join(state_pop_tidy |> filter(year == 2022) |> select(state, P_i = pop),
-              by = c("state_current" = "state")) |>
-    left_join(state_pop_tidy |> filter(year == 2022) |> select(state, P_j = pop),
-              by = c("state_1y"      = "state")) |>
-    mutate(m = population / sqrt(P_i * P_j)) |>
-    select(state_current, state_1y, M_ji = population, P_i, P_j, m)
-
-nrow(m_2023)
+nrow(m_2023) # expect 2450
 summary(m_2023$m)
 ```
 
 ```{r}
-# task 7 average-params
+# Step 4a: M^(2022)
 
-# Average g-bar
-g_bar <- mean(c(g_2024, g_2023))
+M_2022 <- read_excel(
+        file.path("data", "mp03", "State_to_State_Migration_Table_2023.xlsx"),
+        sheet = "Table",
+        range = "DH10",
+        col_names = "from_abroad"
+    ) |> pull(from_abroad)
+
+M_2022
+```
+
+M^(2022) is `r M_2022`.
+
+```{r}
+# Step 4b: g-bar^(2022)
+
+g_2022 <- (P_2023 - P_2022 - M_2022) / P_2022
+g_2022
+```
+
+Using the national population statistics, the calculated value of g-bar^(2022) is `r g_2022`. 
+
+```{r}
+# Step 4c: Estimate m_{j -> i}^(2022)
+
+m_2022 <- flows |>
+    filter(year_current == 2023, state_current != state_1y) |>
+    left_join(state_pop_tidy |> filter(year == 2022) |> select(state, P_i = pop),
+              by = c("state_current" = "state")) |>
+    left_join(state_pop_tidy |> filter(year == 2022) |> select(state, P_j = pop),
+              by = c("state_1y" = "state")) |>
+    mutate(m = population / sqrt(P_i * P_j)) |>
+    select(state_current, state_1y, M_ji = population, P_i, P_j, m)
+
+nrow(m_2022)
+summary(m_2022$m)
+```
+
+```{r}
+# Step 5: Parameter estimates
+
+g_bar <- mean(c(g_2023, g_2022))
 g_bar
 
-# Average m for each state pair. Keep (state_current, state_1y) as the key
-# and take the simple mean of the two m's (equal weight, per the task).
-m_avg <- m_2024 |> select(state_current, state_1y, m_2024 = m) |>
+m_avg <- m_2023 |> select(state_current, state_1y, m_a = m) |>
     left_join(
-        m_2023 |> select(state_current, state_1y, m_2023 = m),
+        m_2022 |> select(state_current, state_1y, m_b = m),
         by = c("state_current", "state_1y")
     ) |>
-    mutate(m = (m_2024 + m_2023) / 2) |>
+    mutate(m = (m_a + m_b) / 2) |>
     select(state_current, state_1y, m)
 
-nrow(m_avg)            # 2450
+nrow(m_avg)
 head(m_avg)
 ```
 
 ```{r}
-# Task 7 projection
+# Step 6: Predictions for 2025, 2026, 2027, 2028, 2029, and 2030.
 
-# One-step update: given a tibble of (state, pop) for year t, return (state, pop) for t+1.
-# P_i^{t+1} = P_i^{t} * (1 + g_bar) + sum_{j != i} m_{j -> i} * sqrt(P_i^{t} * P_j^{t})
 step_forward <- function(pop_t, m_matrix, g){
-    # migration contribution: for each destination i, sum over origins j.
-    # In our m_avg, state_current = i (destination), state_1y = j (origin).
     mig_contrib <- m_matrix |>
         left_join(pop_t |> rename(P_i = pop), by = c("state_current" = "state")) |>
         left_join(pop_t |> rename(P_j = pop), by = c("state_1y"      = "state")) |>
         mutate(term = m * sqrt(P_i * P_j)) |>
         group_by(state = state_current) |>
         summarise(mig_in = sum(term), .groups = "drop")
-    
+
     pop_t |>
         left_join(mig_contrib, by = "state") |>
         mutate(pop = pop * (1 + g) + mig_in) |>
         select(state, pop)
 }
 
-# Starting point: 2024 populations (50 states)
 pop_2024 <- state_pop_tidy |>
     filter(year == 2024) |>
     select(state, pop)
 
-# Iterate 2024 -> 2030 (6 steps), storing each year in a long tibble
 projection <- pop_2024 |> mutate(year = 2024)
 
 current <- pop_2024
 for(yr in 2025:2030){
-    current <- step_forward(current, m_avg, g_bar)
+    current    <- step_forward(current, m_avg, g_bar)
     projection <- bind_rows(projection, current |> mutate(year = yr))
 }
 
-# Wide view for a quick look
 projection_wide <- projection |>
     pivot_wider(names_from = year, values_from = pop, names_prefix = "pop_") |>
-    mutate(pop_change_2024_2030 = pop_2030 - pop_2024,
-           pct_change          = pop_change_2024_2030 / pop_2024)
+    mutate(pop_change = pop_2030 - pop_2024,
+           pct_change = pop_change / pop_2024)
 
-projection_wide |>
-    arrange(desc(pct_change)) |>
-    head(10)
+projection_wide |> arrange(desc(pct_change)) |> head(10)
 
-# Sanity check: total US pop trajectory
 projection |>
     group_by(year) |>
     summarise(US = sum(pop), .groups = "drop")
 ```
+
+```{r}
+# Summary
+
+# pull a few key numbers for the inline summary
+ny_pop_2024 <- projection |> filter(state == "NY", year == 2024) |> pull(pop)
+ny_pop_2030 <- projection |> filter(state == "NY", year == 2030) |> pull(pop)
+ny_pct      <- (ny_pop_2030 - ny_pop_2024) / ny_pop_2024
+
+us_pop_2024 <- projection |> filter(year == 2024) |> summarise(s = sum(pop)) |> pull(s)
+us_pop_2030 <- projection |> filter(year == 2030) |> summarise(s = sum(pop)) |> pull(s)
+us_pct      <- (us_pop_2030 - us_pop_2024) / us_pop_2024
+
+top_growth    <- projection_wide |> slice_max(pct_change, n = 3) |> pull(state)
+bottom_growth <- projection_wide |> slice_min(pct_change, n = 3) |> pull(state)
+```
+
+Rolling the model forward six years from 2024 to 2030 produces a national population of `r scales::comma(round(us_pop_2030))`, up from `r scales::comma(round(us_pop_2024))` in 2024 — a combined growth rate of `r scales::percent(us_pct, accuracy = 0.1)` over six years. The fastest growing states in the projection are `r top_growth[1]`, `r top_growth[2]`, and `r top_growth[3]`, while the slowest growing states are `r bottom_growth[1]`, `r bottom_growth[2]`, and `r bottom_growth[3]`. New York specifically is projected to grow from `r scales::comma(round(ny_pop_2024))` in 2024 to `r scales::comma(round(ny_pop_2030))` in 2030, a change of `r scales::percent(ny_pct, accuracy = 0.1)` which is well below the national rate.
 
 ## Task 8
 
