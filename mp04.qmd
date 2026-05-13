@@ -23,24 +23,267 @@ Code related to Data Acquisition and Preparation goes here.
 Remember that code blocks look like this: 
 
 ```{r}
-# Your code goes in chunks like this
-library(tidyverse) # You will want this line for almost all MPs
-x <- 1 + 2 + 3
-```
+# task1 setup
 
-and you can then print variables from chunks: 
+library(tidyverse)
+library(rvest)
+library(fs)
+library(janitor)
+library(necountries)
+library(sf)
+library(ggplot2)
+library(gt)
+
+slow_download <- purrr::slowly(download.file, purrr::rate_delay(pause = 5))
+
+read_olympedia <- function(url, ...) {
+  if (stringr::str_starts(url, "/")) url <- stringr::str_remove(url, "/")
+  cache_dir <- fs::path("data", "mp04", "olympedia_cache")
+  if (!fs::dir_exists(cache_dir)) fs::dir_create(cache_dir, recurse = TRUE)
+  cache_path <- fs::path(cache_dir,
+                         url |> as.character() |> stringr::str_replace_all("/", "_"))
+  if (!fs::file_exists(cache_path)) {
+    src_url <- paste0("https://www.olympedia.org/", url)
+    slow_download(src_url, cache_path, mode = "wb")
+  }
+  rvest::read_html(cache_path)
+}
+```
 
 ```{r}
-x
+# Task 1 scrape editions
+parse_editions_table <- function(table_node, season) {
+  if (is.na(table_node)) return(tibble())
+  rows <- table_node |> html_elements("tr")
+
+  tibble(
+    season      = season,
+    olympiad_rn = rows |> html_element("td:nth-of-type(1)") |> html_text2() |> str_trim(),
+    edition_id  = rows |> html_element("td:nth-of-type(1) a") |> html_attr("href") |>
+                    str_extract("\\d+$") |> as.integer(),
+    host_noc    = rows |> html_element("td img") |> html_attr("src") |>
+                    str_extract("[A-Z]{3}(?=\\.(png|svg))"),
+    year        = rows |> html_element("td:nth-of-type(2)") |> html_text2() |>
+                    str_extract("\\b(18|19|20)\\d{2}\\b") |> as.integer()
+  ) |>
+    mutate(olympiad = suppressWarnings(as.integer(as.roman(olympiad_rn)))) |>
+    filter(!is.na(edition_id), !is.na(host_noc), !is.na(year))
+}
+
+editions_page <- read_olympedia("editions")
+
+editions <- bind_rows(
+  editions_page |>
+    html_element(xpath = "(//*[self::h2 or self::h3][normalize-space()='Summer'])[1]/following::table[1]") |>
+    parse_editions_table("Summer"),
+  editions_page |>
+    html_element(xpath = "(//*[self::h2 or self::h3][normalize-space()='Winter'])[1]/following::table[1]") |>
+    parse_editions_table("Winter")
+) |>
+arrange(year, season) |>
+  filter(year <= 2024)
+
+nrow(editions)
+editions
 ```
 
-or inline, like this: $x$ is `r x`.
+```{r}
+# Task 1 scrape-disciplines
+get_disciplines <- function(edition_id) {
+  page <- read_olympedia(paste0("editions/", edition_id))
+  links <- page |> html_elements(paste0("a[href*='/editions/", edition_id, "/sports/']"))
+  tibble(
+    edition_id      = edition_id,
+    discipline_code = links |> html_attr("href") |> str_extract("[^/]+$"),
+    discipline_name = links |> html_text2() |> str_trim()
+  ) |>
+    filter(!is.na(discipline_code), discipline_code != "", str_length(discipline_code) <= 5,
+           discipline_name != "") |>
+    distinct()
+}
+
+disciplines <- editions |>
+  mutate(disc = map(edition_id, get_disciplines)) |>
+  mutate(disc = map(disc, ~ select(.x, -any_of("edition_id")))) |>
+  unnest(disc)
+
+
+ed_page <- read_olympedia("editions")
+
+ed_page |> html_elements("h1, h2, h3") |> html_text2()
+
+ed_page |> html_elements("table") |> length()
+```
+
+```{r}
+# Task 1 scrape-medal-tables
+get_medal_table <- function(edition_id, discipline_code) {
+  page <- read_olympedia(paste0("editions/", edition_id, "/sports/", discipline_code))
+  tbl_node <- page |>
+    html_element(xpath = "//*[self::h2 or self::h3][normalize-space()='Medal table']/following::table[1]")
+  if (is.na(tbl_node)) return(tibble())
+
+  rows <- tbl_node |> html_elements("tr")
+  noc <- rows |> html_element("td:nth-of-type(2) a") |> html_attr("href") |>
+    str_extract("[A-Z]{3}$")
+
+  raw <- html_table(tbl_node, header = FALSE)
+  tibble(
+    noc    = noc,
+    gold   = suppressWarnings(as.integer(raw[[3]])),
+    silver = suppressWarnings(as.integer(raw[[4]])),
+    bronze = suppressWarnings(as.integer(raw[[5]])),
+    total  = suppressWarnings(as.integer(raw[[6]]))
+  ) |>
+    filter(!is.na(noc), !is.na(gold))
+}
+
+
+get_medal_table_safe <- possibly(get_medal_table, otherwise = tibble())
+
+medal_tables <- disciplines |>
+  mutate(medals = map2(edition_id, discipline_code, get_medal_table_safe)) |>
+  unnest(medals)
+
+nrow(medal_tables)
+head(medal_tables)
+```
+
+```{r}
+# Task 1 tidy-final
+olympics <- medal_tables |>
+  filter(!is.na(noc)) |>
+  select(year, season, olympiad, edition_id, host_noc,
+         discipline_code, discipline_name,
+         noc, gold, silver, bronze, total) |>
+  arrange(year, season, edition_id, discipline_code, desc(gold))
+
+glimpse(olympics)
+nrow(olympics)
+```
+
+```{r}
+# task 2 countries-setup
+
+
+
+countries_sf <- countries()
+
+# Confirm the 3-letter code column name (likely "a3", but verify)
+colnames(countries_sf)
+head(countries_sf, 3)
+
+# Find Olympedia codes not in necountries, ranked by medal count
+
+unmatched <- olympics |>
+  distinct(noc) |>
+  anti_join(countries_sf, by = c("noc" = "iso3"))
+
+unmatched |>
+  left_join(olympics |> group_by(noc) |> summarise(total_gold = sum(gold)),
+            by = "noc") |>
+  arrange(desc(total_gold))
+```
+
+```{r}
+# Task 2 countries-recode
+olympics_clean <- olympics |>
+  mutate(noc_iso = case_match(noc,
+    "URS" ~ "RUS",  # Soviet Union -> Russia (assignment-required)
+    "EUN" ~ "RUS",  # Unified Team 1992 -> Russia (same rationale)
+    "FRG" ~ "DEU",  # West Germany -> Germany
+    "GDR" ~ "DEU",  # East Germany -> Germany
+    "GER" ~ "DEU",  # Olympedia GER -> ISO DEU
+    "GRE" ~ "GRC",
+    "TCH" ~ "CZE",  # Czechoslovakia -> Czech Republic
+    "BUL" ~ "BGR",
+    "CRO" ~ "HRV",
+    "DEN" ~ "DNK",
+    "NED" ~ "NLD",
+    "POR" ~ "PRT",
+    "RSA" ~ "ZAF",
+    "SUI" ~ "CHE",
+    "INA" ~ "IDN",
+    "IRI" ~ "IRN",
+    "PHI" ~ "PHL",
+    "ALG" ~ "DZA",
+    "CHI" ~ "CHL",
+    "MGL" ~ "MNG",
+    "SLO" ~ "SVN",
+    "LAT" ~ "LVA",
+    "URU" ~ "URY",
+    "PUR" ~ "PRI",
+    "TPE" ~ "TWN",
+    "ZIM" ~ "ZWE",
+    "ROC" ~ "RUS",
+    "BAH" ~ "BHS",
+    "NGR" ~ "NGA",
+    .default = noc
+  ))
+
+# Verify what's left unmatched
+olympics_clean |>
+  distinct(noc_iso) |>
+  anti_join(countries_sf, by = c("noc_iso" = "iso3")) |>
+  left_join(olympics_clean |> group_by(noc_iso) |> summarise(total_gold = sum(gold)),
+            by = "noc_iso") |>
+  arrange(desc(total_gold))
+```
+
+```{r}
+# Task 2 countries-viz
+
+gold_by_country <- olympics_clean |>
+  group_by(noc_iso) |>
+  summarise(total_gold = sum(gold, na.rm = TRUE), .groups = "drop")
+
+map_data <- countries_sf |>
+  st_set_geometry("polygon") |>
+  left_join(gold_by_country, by = c("iso3" = "noc_iso"))
+
+ggplot(map_data) +
+  geom_sf(aes(fill = total_gold), color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(
+    na.value = "grey90",
+    name = "All-time golds",
+    labels = scales::label_comma()
+  ) +
+  labs(
+    title = "All-time Olympic gold medal totals by country",
+    subtitle = "Modern Olympics, 1896–2026 (Summer + Winter)",
+    caption = "Source: Olympedia. Defunct nations recoded to successor states where possible."
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    panel.grid = element_blank(),
+    axis.text = element_blank()
+  )
+```
 
 ## Exploratory Analysis
 
-Code related to Exploratory Data Analysis goes here. This may include
-exploratory graphics, instructor-provided exploratory questions, or other
-similar elements. 
+## Task 3
+
+```{r}
+# Task 3 preamble
+
+# Filter to summer + season-comparable data for most analyses
+olympics_summer <- olympics_clean |> filter(season == "Summer")
+```
+
+```{r}
+# Task 3 eda-1 USA total medals
+
+usa_total_gold <- olympics_clean |>
+  filter(noc == "USA") |>
+  summarise(total = sum(gold, na.rm = TRUE)) |>
+  pull(total)
+usa_total_gold
+```
+The United States has won `r usa_total_gold` gold medals across all modern Summer and Winter Olympics through 2026 — more than any other country in history.
+
+
 
 ## Final Insights and Deliverable
 
