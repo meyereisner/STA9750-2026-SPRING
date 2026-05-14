@@ -1,6 +1,3 @@
-**This is only a basic Mini-Project Template.**
-**Delete this note and customize formatting according to your preferences and**
-**the Mini-Project instructions. Your document must start the `---` below**
 ---
 title: "Mini-Project 04 - Going for the Gold"
 author: "Joshua Eisner"
@@ -13,14 +10,12 @@ format:
 
 ## Introduction
 
-A suitable introduction goes here. In this mini-project, I intend to demonstrate
-my skills at Web Scraping/Data Cleaning/Forecasting in an analysis of Sports Analytics data.
+This project builds a statistical forecast for Team USA's medal count at the 2028 Los Angeles Summer Olympics. The forecast combines three factors: USA's baseline historical performance, the host nation effect (home field advantage), and the new sport effect (host countries often do well in newly added events). LA 2028 is bringing back six sports: baseball, softball, lacrosse, cricket, flag football, and squash which will add 22 new medal events to the program.
+
+The data comes from Olympedia, scraped using `httr2` and `rvest`. After cleaning the data and standardizing country codes against ISO references, the project moves through exploratory data analysis, formal statistical inference using the `infer` package to estimate confidence intervals for each of the three factors, and a Monte Carlo simulation that combines those intervals into a final forecast.
 
 ## Data Acquisition and Preparation
 
-Code related to Data Acquisition and Preparation goes here.
-
-Remember that code blocks look like this: 
 
 ```{r}
 # Libraries
@@ -286,7 +281,6 @@ usa_total_gold <- olympics_clean |>
   filter(noc == "USA") |>
   summarise(total = sum(gold, na.rm = TRUE)) |>
   pull(total)
-usa_total_gold
 ```
 The United States has won `r usa_total_gold` gold medals across all modern Summer and Winter Olympics through 2026 which is more than any other country in history.
 
@@ -311,7 +305,7 @@ usa_by_sport |>
   tab_header(title = "USA's top 10 sports by all-time gold medals") |>
   cols_label(discipline_name = "Sport")
 ```
- Athletics and swimming account for the bulk of US Olympic dominance, with `r usa_ath_gold` and `r usa_swm_gold` golds making up over half of USA's all-time gold haul.
+ Athletics and swimming account for the bulk of US Olympic dominance, with `r usa_ath_gold` and `r usa_swm_gold` golds making up over half of USA's all time gold haul.
  ("Athletics" is the IOC's term for track and field which contains 48 events including running, hurdles, jumps, throws, etc.)
 
 EDA 3: 
@@ -336,7 +330,7 @@ ggplot(usa_summer_by_year, aes(x = year, y = gold)) +
        x = NULL, y = "Gold medals") +
   theme_minimal()
 ```
-USA gold-medal output per Summer Olympics has fluctuated between roughly 30 and 50 in the post-Soviet era, with the Los Angeles 1984 boycott year (`r usa_la_1984`) as a clear outlier.
+USA gold medal's  per Summer Olympics has fluctuated between about 30 and 50 in the post Soviet era, with the Los Angeles 1984 boycott year 19(`r usa_la_1984`) as a clear outlier.
 
 EDA 4: 
 ```{r}
@@ -393,7 +387,7 @@ host_effect |>
              next_gold = "Next", premium = "Premium vs. avg") |>
   fmt_number(columns = premium, decimals = 1)
 ```
-The table below shows every Summer host with comparison data. Hosts almost always overperform. Only `r sum(host_effect$premium < 0, na.rm = TRUE)` of `r nrow(host_effect)` hosts won fewer golds at home than the surrounding average.
+The table above shows every Summer host with comparison data. Hosts almost always overperform. Only `r sum(host_effect$premium < 0, na.rm = TRUE)` of `r nrow(host_effect)` hosts won fewer golds at home than the surrounding average.
 
 EDA 6: 
 ```{r}
@@ -434,7 +428,6 @@ new_sport_perf <- discipline_debut |>
   filter(total_gold_in_sport > 0)
 
 new_sport_host_share <- mean(new_sport_perf$host_share, na.rm = TRUE)
-new_sport_host_share
 ```
 When a new sport debuts at the Summer Olympics, the host nation wins on average `r round(100 * new_sport_host_share, 1)`% of the available golds in that sport - well above what would be expected if all countries were equally likely to win.
 
@@ -488,7 +481,7 @@ bind_rows(host_overall_share, new_sport_share) |>
 ```
 Visualizing the same data, the host wins significantly more debut sports then non debut sports.
 
-Free Choice Findings
+### Free Choice Findings
 
 EDA 10: 
 ```{r}
@@ -526,7 +519,7 @@ olympics_clean |>
        x = NULL, y = "Gold medals", color = NULL) +
   theme_minimal()
 ```
-Top 5 countries with the most golds over time
+These are the top 5 countries with the most golds over time.
 
 EDA 12: 
 ```{r}
@@ -549,7 +542,7 @@ olympics_clean |>
   gt() |>
   tab_header(title = "Top historical performers in 2028 LA's new/returning sports")
 ```
-The 2028 Games will (re)introduce baseball/softball, cricket, flag football, lacrosse, and squash. This is how the top historical performers of when these sports were in the Olympics:
+The 2028 Games will (re)introduce baseball/softball, cricket, flag football, lacrosse, and squash. The above is how the top historical performers of when these sports were in the Olympics.
 
 ## Task 4
 
@@ -692,7 +685,7 @@ q3_results |>
   fmt_percent(columns = c(estimate, lower_ci, upper_ci), decimals = 1) |>
   fmt_number(columns = p_value, decimals = 4)
 ```
-Taken together, the three confidence intervals quantify the components of our LA 2028 forecast. Q1 estimates that USA has averaged roughly 41 golds (CI [35, 48]) and 107 total medals (CI [95, 118]) per Summer Olympics since 1960 — a stable baseline. Q2 finds strong but variable evidence that hosts overperform their prior Summer Olympics: the average host wins about 175% more golds at home (CI [0.2%, 350%]), with positive lower bounds for every medal type. The wide interval reflects high variance across hosts, but the fact that the lower bound is above zero across all four medal types is itself a meaningful finding. Q3 estimates that when a new sport is added, the host nation wins at least one medal in that sport about 57% of the time (CI [40%, 73%]) and at least one gold about 34% of the time (CI [20%, 52%]). Each of these intervals feeds directly into the Monte Carlo simulation in Task 5.
+Taken together, the three confidence intervals quantify the components of our LA 2028 forecast. Q1 estimates that USA has averaged roughly 41 golds (CI [35, 48]) and 107 total medals (CI [95, 118]) per Summer Olympics since 1960. Q2 finds strong but variable evidence that hosts overperform their prior Summer Olympics: the average host wins about 175% more golds at home (CI [0.2%, 350%]), with positive lower bounds for every medal type. The wide interval reflects high variance across hosts, but the fact that the lower bound is above zero across all four medal types says a lot about USA's potential. Q3 estimates that when a new sport is added, the host nation wins at least one medal in that sport about 57% of the time (CI [40%, 73%]) and at least one gold about 34% of the time (CI [20%, 52%]). Each of these intervals feeds directly into the Monte Carlo simulation in Task 5.
 
 ## Task 5
 
@@ -757,16 +750,73 @@ forecast_2028 |>
              decimals = 1) |>
   fmt_percent(columns = host_prob, decimals = 1)
 ```
-The point forecast suggests Team USA could win ~122 gold medals and ~250 total medals at the 2028 Los Angeles Summer Olympics. The wide intervals reflect significant uncertainty in the host-nation factor (Q2), which is the dominant source of variation: the historical host premium ranges from negligible (+0.2%) to massive (+350%). The lower bound of the gold CI (~49) is closer to USA's recent baseline performance, while the upper bound (~199) reflects scenarios where USA receives a host bump comparable to South Korea 1988 or China 2008. The simulation assumes the three component estimates are independent, which is itself a simplification — in reality, the host factor and new-sport probability are likely correlated.
-
+The point forecast suggests Team USA could win ~122 gold medals and ~250 total medals at the 2028 Los Angeles Summer Olympics. The wide intervals reflect significant uncertainty in the home field advantage factor (Q2), which is where most of the variation is coming from: the historical host premium ranges from negligible (+0.2%) to massive (+350%). The lower bound of the gold CI (~49) is closer to USA's recent baseline performance, while the upper bound (~199) reflects scenarios where USA receives a host bump comparable to South Korea 1988 or China 2008.
 
 
 ## Final Insights and Deliverable
 
-Code related to the final deliverable of the assignment goes here. 
+## Task 6: LA 2028 Performance Brief — Team USA
+
+**Prepared for:** LA 2028 Organizing Committee, Sponsor Outreach Team  
+**Subject:** Forecasted Performance of Team USA at the 2028 Los Angeles Summer Olympics
+
+### The Bottom Line
+
+Team USA is positioned for what could be the most dominant Olympic performance in American history. Our forecast projects approximately **250 total medals**, including **roughly 120 gold**, at the 2028 Los Angeles Summer Olympics. Even the conservative scenario - the lower bound of our 95% confidence range — comes in at **131 total medals and 49 golds**, in line with USA's strongest recent Olympics.
+
+For sponsors, this is the rare combination of a home Games, a deep talent pool, and an expanded medal program tailored to American strengths.
+
+### The Three-Factor Model
+
+We built our forecast around three components grounded in 60+ years of Olympic history:
+
+**1. USA Baseline.** Across every Summer Olympics since 1960, Team USA has averaged **41 gold medals and 107 total medals** per Games. This is the floor: USA shows up to every Olympics as the team to beat, regardless of host country or sport mix. Recent performances (46 golds in Rio, 39 in Tokyo, 40 in Paris) line up with this baseline.
+
+**2. The Host Nation Effect.** Host countries consistently overperform their prior Olympics and usually by a wide margin. Recent examples make this concrete:
+
+- South Korea doubled its gold count when hosting Seoul 1988
+- China jumped from 32 golds in Athens 2004 to 48 in Beijing 2008
+- Great Britain won its highest medal count in a century at London 2012
+
+The reasons are well documented: home crowds, specialized training facilities, and automatic qualification in every event combine to create a real boost. Our analysis estimates the home field advantage adds significantly to baseline performance, with the lower bound of statistical confidence still showing a positive effect.
+
+**3. The New Sport Effect.** LA 2028 introduces six sports either new to the Olympics or returning after long absences: **baseball, softball, lacrosse, cricket, flag football, and squash**. These add **22 new medal events** beyond the 2024 program. History shows host nations win medals in newly added sports about **57% of the time**, and golds about **34% of the time**. Team USA's profile in these new events is exceptional:
+
+- **Baseball & Softball:** USA holds 4 of the 9 historical Olympic gold medals
+- **Lacrosse:** USA is the dominant historical performer
+- **Flag Football:** USA hhas been dominant in the professional flag football league - even beating a team made up of NFL stars
+- **Cricket & Squash:** Less of a historical strength, but still competitive entries
+
+### The Combined Forecast
+
+Combining these three factors via Monte Carlo simulation gives the following forecast for LA 2028:
+
+| Medal Type | Conservative (Lower 95%) | Expected (Median) | Optimistic (Upper 95%) |
+|:---|:---:|:---:|:---:|
+| Gold | 49 | 122 | 199 |
+| Silver | 45 | 74 | 107 |
+| Bronze | 38 | 50 | 63 |
+| **Total** | **131** | **250** | **374** |
+
+The expected total of **~250 medals** would be the largest medal haul by any nation at any Summer Olympics in modern history. Even the conservative case lands USA above its recent Olympic averages, and the optimistic case approaches three times the recent baseline.
+
+### What This Means for Sponsors
+
+LA 2028 represents an unmatched opportunity:
+
+- **Home soil:** Highest projected viewership for any Olympics ever held in the United States, with primetime broadcast windows aligned to American audiences.
+- **Sport mix favors USA:** The new sport additions are tailored to American athletic strengths — baseball, softball, lacrosse, and flag football all skew heavily in Team USA's favor.
+- **Statistical confidence:** Even our most conservative forecast (131 total medals) would tie or exceed Team USA's most recent Olympic performances.
+- **Story driven narratives:** A home Games + a record-breaking team + reintroduced American sports gives sponsors built-in storytelling opportunities for the next two years.
 
 
 
+::: {.callout-note title="AI Usage Statement" collapse="true"}
+
+Claude was used to help write the code in this project, but all non-code text was generated without the use of any Generative AI tools, just me.
+ 
+
+:::
 ------------------------------------------------------------------------
 
 This work ©2025 by  was initially prepared as a Mini-Project for
